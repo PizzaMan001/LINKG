@@ -37,7 +37,7 @@ function get_config_value($key, $content, $is_numeric = false) {
 }
 
 $backend  = get_config_value('backend', $html);
-$pass     = get_config_value('pass', $html);
+$pass      = get_config_value('pass', $html);
 $prefix   = get_config_value('prefix', $html);
 $mathMul  = (int)get_config_value('mathMul', $html, true);
 $mathAdd  = (int)get_config_value('mathAdd', $html, true);
@@ -61,7 +61,7 @@ function fetchApi($apiUrl, $referer) {
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_FOLLOWLOCATION => true,
         CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_REFERER => $referer, // CRITICAL: Tells the backend the request is legit
+        CURLOPT_REFERER => $referer,
         CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     ]);
     
@@ -70,13 +70,16 @@ function fetchApi($apiUrl, $referer) {
     return json_decode($response, true);
 }
 
-// 5. XOR Decryption Function
+// 5. FIXED XOR Decryption Function
 function decryptHexXOR($hex, $key) {
+    // Clean the hex string from any non-hex characters (spaces, etc)
+    $hex = preg_replace('/[^0-9a-fA-F]/', '', $hex);
     $result = "";
     $keyLen = strlen($key);
     for ($i = 0; $i < strlen($hex); $i += 2) {
         $hexByte = substr($hex, $i, 2);
-        $charCode = hexdec($hexByte) ^ ord($key[($i / 2) % $keyLen]);
+        // Using @ to suppress hexdec warnings and ensure it only processes valid bytes
+        $charCode = @hexdec($hexByte) ^ ord($key[($i / 2) % $keyLen]);
         $result .= chr($charCode);
     }
     return $result;
@@ -86,13 +89,16 @@ function decryptHexXOR($hex, $key) {
 $initResponse = fetchApi($backend . "?action=init", $url);
 
 if (!isset($initResponse['data']) || $initResponse['status'] !== 'success') {
-    die("Error: Session Failed (Backend rejected request)");
+    die("Error: Session Failed");
 }
 $sessionToken = $initResponse['data'];
 
 // --- STEP 2: Anti-Bot Wait ---
-// We use the waitTime found in the HTML (usually 20)
-sleep($waitTime);
+// Note: On Vercel, if waitTime > 10, this script may time out.
+// If it fails, move this sleep to the JavaScript side.
+if ($waitTime > 0 && $waitTime < 10) {
+    sleep($waitTime);
+}
 
 // --- STEP 3: Generate Auth ID ---
 $currentHour = (int)date('G'); 
@@ -104,45 +110,29 @@ $fetchUrl = $backend . "?action=getLink&sessToken=" . urlencode($sessionToken) .
 $linkResponse = fetchApi($fetchUrl, $url);
 
 if (!isset($linkResponse['data']) || $linkResponse['status'] !== 'success') {
-    die("Error: Link fetch failed. Check if dataId is correct.");
+    die("Error: Link fetch failed.");
 }
 
 // --- STEP 5: Decrypt and Output ---
 $finalM3uLink = decryptHexXOR($linkResponse['data'], $pass);
 
-// Output ONLY the link for the AJAX popup to capture
-//echo trim($finalM3uLink);
-
-
+// --- STEP 6: Get Redirect ---
 $ch = curl_init();
+curl_setopt_array($ch, [
+    CURLOPT_URL => $finalM3uLink,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_FOLLOWLOCATION => false, 
+    CURLOPT_HEADER => true,
+    CURLOPT_USERAGENT => "okhttp/4.12.0",
+    CURLOPT_SSL_VERIFYPEER => false,
+    CURLOPT_SSL_VERIFYHOST => false
+]);
 
-curl_setopt($ch, CURLOPT_URL, $finalM3uLink);
-curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false); // IMPORTANT: don't auto-follow
-curl_setopt($ch, CURLOPT_HEADER, true); // include headers
-curl_setopt($ch, CURLOPT_USERAGENT, "okhttp/4.12.0");
-
-// Optional SSL skip
-curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-
-$finalM3uLink = curl_exec($ch);
-
-// Separate headers and body
-$header_size = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
-$headers = substr($finalM3uLink, 0, $header_size);
-$body = substr($finalM3uLink, $header_size);
-
-// Get redirect URL if exists
-$finalM3uLink = curl_getinfo($ch, CURLINFO_REDIRECT_URL);
-
+$response = curl_exec($ch);
+$redirectUrl = curl_getinfo($ch, CURLINFO_REDIRECT_URL);
 curl_close($ch);
 
-// Output as plain text
+// Output strictly plain text
 header("Content-Type: text/plain");
-
-
-echo $finalM3uLink;
-
-//echo $body;
+echo $redirectUrl ? trim($redirectUrl) : trim($finalM3uLink);
 ?>
